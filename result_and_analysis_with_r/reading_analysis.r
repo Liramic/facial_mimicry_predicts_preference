@@ -21,10 +21,10 @@ performance::icc(null_model) # icc is 0.055 --> no need to use mixed models.
 # change the type to compute paired t-tests and permutation test
 # to test mimicry use "corr"
 # to test listener mean activation use "mean_comp_listener".
-type <- "mean_comp_listener"
+type <- "corr"
 
 #___________________________________________________
-#____________t-test for each cluster________________
+#___t-test for each cluster - orig deprecated plot__
 #___________________________________________________
 n_clusters <- 16
 t_values <- numeric(n_clusters)
@@ -96,6 +96,115 @@ ggplot(t_df, aes(x = t_value, y = cluster)) +
 print(t_df)
 
 ggsave(paste0(graphs_dir, "t_test_cluster_plot_", type, ".png"), width = 6, height = 6, dpi = 300, bg = 'white')
+
+
+
+#------------------------------------------
+#-------- T-test - ploting the effect-size 
+#------------------------------------------
+# -------------------------
+# Additional library
+# -------------------------
+library(effectsize)   # for cohens_d()
+
+# -------------------------
+# Containers
+# -------------------------
+d_vals  <- numeric(n_clusters)
+ci_low  <- numeric(n_clusters)
+ci_high <- numeric(n_clusters)
+p_vals  <- numeric(n_clusters)
+sig_lbl <- character(n_clusters)
+
+# -------------------------
+# Loop over clusters
+# -------------------------
+for (i in 0:(n_clusters - 1)) {
+  # Extract S1 / S2 and build paired vectors
+  S1 <- data[[paste0("cluster_", i, "_", type, "_S1")]]
+  S2 <- data[[paste0("cluster_", i, "_", type, "_S2")]]
+  
+  chosen   <- ifelse(data$listener_choice == 0, S1, S2)
+  unchosen <- ifelse(data$listener_choice == 0, S2, S1)
+  
+  # Paired t‑test (still useful for p)
+  tt <- t.test(chosen, unchosen, paired = TRUE)
+  
+  # Paired Cohen's d (mean(diff)/sd(diff))
+  d_obj <- cohens_d(chosen, unchosen,
+                    paired     = TRUE,
+                    pooled_sd  = FALSE,
+                    ci         = 0.95)
+  
+  # Save results
+  d_vals[i + 1]   <- d_obj$Cohens_d
+  ci_low[i + 1]   <- d_obj$CI_low
+  ci_high[i + 1]  <- d_obj$CI_high
+  p_vals[i + 1]   <- tt$p.value
+  
+  sig_lbl[i + 1] <- ifelse(tt$p.value   < .001, "***",
+                           ifelse(tt$p.value   < .01,  "**",
+                                  ifelse(tt$p.value   < .05,  "*",  "")))
+}
+
+# -------------------------
+# Assemble data frame
+# -------------------------
+es_df <- data.frame(
+  cluster  = cluster_names,
+  d        = d_vals,
+  ci_low   = ci_low,
+  ci_high  = ci_high,
+  p_value  = p_vals,
+  sig      = sig_lbl
+) |>
+  arrange(d) |>          # order by (signed) effect size
+  mutate(cluster = factor(cluster, levels = cluster))  # keep that order
+
+# -------------------------
+# Plot
+# -------------------------
+
+ggplot(es_df, aes(x = d, y = cluster)) +
+  # Lowered bars
+  geom_bar(stat = "identity", fill = "steelblue",
+           position = position_nudge(y = -0.2), width = 0.6) +
+  
+  # Lowered error bars
+  geom_errorbarh(aes(xmin = ci_low, xmax = ci_high),
+                 height = 0.15,
+                 position = position_nudge(y = -0.2)) +
+  
+  # Vertical reference line
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  
+  # Text at end of each bar
+  geom_text(aes(label = paste0(round(d, 2), sig)),
+            hjust = ifelse(es_df$d > 0, -0.2, 1.2),
+            position = position_nudge(y = 0.15),
+            size = 5) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 14),
+    axis.text.x = element_text(size = 18),
+    axis.title.y = element_text(size = 16),
+    axis.title.x = element_text(size = 16),
+    plot.title = element_text(size = 18, face = "bold")
+  ) +
+  labs(y = "",
+       x = "") +
+  coord_cartesian(xlim = c(-0.3, 0.4))
+
+
+# Optional: print numeric table
+print(es_df, digits = 3)
+
+#revision_graph_dir is C:\Liron\neuroscience\PHD\exp_1_EMG\Paper\Review\Revision_2\graphs
+revision_graph_dir = "C:\\Liron\\neuroscience\\PHD\\exp_1_EMG\\Paper\\Review\\Revision_2\\graphs\\"
+
+ggsave(paste0(revision_graph_dir, "t_test_cluster_plot_cohens_d_", type, ".png"), width = 6, height = 6, dpi = 300, bg = 'white')
+
 
 
 #___________________________________________________
@@ -200,6 +309,11 @@ model_real <- glm(listener_choice ~ pos_z * neg_z,
                   family = binomial())
 
 summary(model_real)
+
+chi2 <- model_real$null.deviance - model_real$deviance
+pval <- pchisq(chi2, df = model_real$df.null - model_real$df.residual, lower.tail = FALSE)
+cat("Chi-squared test statistic:", chi2, "\n")
+cat("P-value for model significance:", pval, "\n")
 #plot(allEffects(model_real))
 
 # 5) Collect Real Metrics
@@ -359,6 +473,17 @@ data$avg_mean_comp = safe_zscore(data$avg_mean_comp)
 model = glm(listener_choice ~ avg_corr + avg_mean_comp, data = data, family = binomial())
 summary(model)
 
+
+chi2 <- model$null.deviance - model$deviance
+pval <- pchisq(chi2, df = model$df.null - model$df.residual, lower.tail = FALSE)
+cat("Chi-squared test statistic:", chi2, "\n")
+cat("P-value for model significance:", pval, "\n")
+
+#compute R^2:
+# Tjur's R²
+library(performance)
+r2(model, type = "tjur")
+
 #___________________________________________________
 #____________Valence Based Clustering_______________
 #___________________________________________________
@@ -404,12 +529,20 @@ confint_model <- confint.default(model)  # or confint(model) for profile CIs
 OR_CI <- exp(confint_model)
 print(OR_CI)
 
+chi2 <- model$null.deviance - model$deviance
+pval <- pchisq(chi2, df = model$df.null - model$df.residual, lower.tail = FALSE)
+cat("Chi-squared test statistic:", chi2, "\n")
+cat("P-value for model significance:", pval, "\n")
+
+r2(model, type = "tjur")
+
 #___________________________________________________
 #____________mimicry based model (valenced)_________
 #___________________________________________________
 
 model = glm(listener_choice ~ pos_mimic * neg_mimic, data = data, family = binomial())
 summary(model)
+
 OR <- exp(coef(model))
 print(OR)
 # Confidence Intervals for coefficients (on log-odds scale)
@@ -417,6 +550,14 @@ confint_model <- confint.default(model)  # or confint(model) for profile CIs
 # Confidence Intervals for Odds Ratios
 OR_CI <- exp(confint_model)
 print(OR_CI)
+
+chi2 <- model$null.deviance - model$deviance
+pval <- pchisq(chi2, df = model$df.null - model$df.residual, lower.tail = FALSE)
+cat("Chi-squared test statistic:", chi2, "\n")
+cat("P-value for model significance:", pval, "\n")
+
+r2(model, type = "tjur", ci = 0.95, ci_method = "boot",
+   iterations = 1000, parallel = TRUE)  
 
 #___________________________________________________
 #____________plot mimicry based model effects_______
@@ -455,10 +596,9 @@ common_theme <- list(
 
 # POSITIVE MIMICRY PLOT
 p1 <- xyplot(fit ~ pos_mimic, data = df_pos,
-             type = "l",
-             ylim = c(0, 1),
+             type = "l", ylim = c(0, 1),
              ylab = "Probability of selecting synopsis 2",
-             xlab = "minus_positive_mimicry",
+             xlab = "positiveMimicryDif (S2-S1)",
              main = "Positive Mimicry",
              par.settings = common_theme$par.settings,
              scales = common_theme$scales,
@@ -467,19 +607,29 @@ p1 <- xyplot(fit ~ pos_mimic, data = df_pos,
                              c(df_pos$lower, rev(df_pos$upper)),
                              col = rgb(0, 0, 1, 0.2), border = NA)
                panel.lines(x, y, col = "blue", lwd = 2)
-               panel.segments(x0 = data$pos_mimic,
-                              x1 = data$pos_mimic,
-                              y0 = 0,
-                              y1 = 0.03,
+               
+               # --- NEW: draw ticks by listener_choice ---
+               idx0 <- data$listener_choice == 0
+               idx1 <- data$listener_choice == 1
+               
+               # bottom ticks for choice == 0
+               panel.segments(x0 = data$pos_mimic[idx0],
+                              x1 = data$pos_mimic[idx0],
+                              y0 = 0, y1 = 0.03,
+                              col = "black", lwd = 1.2)
+               
+               # top ticks for choice == 1
+               panel.segments(x0 = data$pos_mimic[idx1],
+                              x1 = data$pos_mimic[idx1],
+                              y0 = 0.97, y1 = 1,
                               col = "black", lwd = 1.2)
              })
 
 # NEGATIVE MIMICRY PLOT
 p2 <- xyplot(fit ~ neg_mimic, data = df_neg,
-             type = "l",
-             ylim = c(0, 1),
+             type = "l", ylim = c(0, 1),
              ylab = "Probability of selecting synopsis 2",
-             xlab = "minus_negative_mimicry",
+             xlab = "negativeMimicryDif (S2-S1)",
              main = "Negative Mimicry",
              par.settings = common_theme$par.settings,
              scales = common_theme$scales,
@@ -488,13 +638,20 @@ p2 <- xyplot(fit ~ neg_mimic, data = df_neg,
                              c(df_neg$lower, rev(df_neg$upper)),
                              col = rgb(1, 0, 0, 0.2), border = NA)
                panel.lines(x, y, col = "red", lwd = 2)
-               panel.segments(x0 = data$neg_mimic,
-                              x1 = data$neg_mimic,
-                              y0 = 0,
-                              y1 = 0.03,
+               
+               idx0 <- data$listener_choice == 0
+               idx1 <- data$listener_choice == 1
+               
+               panel.segments(x0 = data$neg_mimic[idx0],
+                              x1 = data$neg_mimic[idx0],
+                              y0 = 0, y1 = 0.03,
+                              col = "black", lwd = 1.2)
+               
+               panel.segments(x0 = data$neg_mimic[idx1],
+                              x1 = data$neg_mimic[idx1],
+                              y0 = 0.97, y1 = 1,
                               col = "black", lwd = 1.2)
              })
-
 # Arrange side by side
 grid.arrange(p1, p2, ncol = 2)
 
